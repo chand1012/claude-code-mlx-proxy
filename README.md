@@ -1,6 +1,6 @@
 # Local MLX Backend for Claude Code
 
-This project provides a local server that acts as a backend for the **Claude Code** IDE extension. It allows you to use open-source models running on your local machine via Apple's MLX framework. Instead of sending your code to Anthropic's servers, you can use powerful models like Llama 3, Mistral, DeepSeek, and more, all running on your Apple Silicon Mac.
+This project provides a local server that acts as a backend for the **Claude Code** command line coding assistant. It allows you to use open-source models running on your local machine via Apple's MLX framework. Instead of sending your code to Anthropic's servers, you can use powerful models like Llama 3, GLM-4.5-Air, DeepSeek, and more, all running on your Apple Silicon Mac.
 
 This server implements the Claude Messages API format that Claude Code communicates with, redirecting all requests to a local model of your choice.
 
@@ -64,10 +64,7 @@ The most reliable way to do this is to **launch your IDE from a terminal** where
 export ANTHROPIC_BASE_URL=http://localhost:8888
 
 # Now, launch Claude Code from this same terminal window
-# For Claude Code:
-claude-code .
-
-# For other IDEs with Claude Code extension, use their respective command-line launchers.
+claude
 ```
 
 Once your IDE is running, Claude Code will automatically use your local MLX backend. You can now chat with it or use its code completion features, and all requests will be handled by your local model.

@@ -369,7 +369,6 @@ async def stream_generate_response(
             tokenizer,
             prompt=prompt,
             max_tokens=request.max_tokens,
-            verbose=config.VERBOSE,
         )
     ):
         full_text += response.text
