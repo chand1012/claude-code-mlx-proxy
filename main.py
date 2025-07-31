@@ -1,5 +1,5 @@
-import asyncio
-from typing import List, Dict, Any, Optional
+import json
+from typing import List, Dict, Any, Optional, Union, Literal
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -14,36 +14,108 @@ model = None
 tokenizer = None
 
 
+# Content block models
+class ContentBlockText(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ContentBlockImage(BaseModel):
+    type: Literal["image"] = "image"
+    source: Dict[str, Any]
+
+
+class ContentBlockToolUse(BaseModel):
+    type: Literal["tool_use"] = "tool_use"
+    id: str
+    name: str
+    input: Dict[str, Any]
+
+
+class ContentBlockToolResult(BaseModel):
+    type: Literal["tool_result"] = "tool_result"
+    tool_use_id: str
+    content: Union[str, List[Dict[str, Any]], Dict[str, Any], List[Any], Any]
+
+
+class SystemContent(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ThinkingConfig(BaseModel):
+    enabled: bool
+
+
+class Tool(BaseModel):
+    name: str
+    description: Optional[str] = None
+    input_schema: Dict[str, Any]
+
+
 class Message(BaseModel):
-    role: str
-    content: str
+    role: Literal["user", "assistant"]
+    content: Union[
+        str,
+        List[
+            Union[
+                ContentBlockText,
+                ContentBlockImage,
+                ContentBlockToolUse,
+                ContentBlockToolResult,
+            ]
+        ],
+    ]
 
 
-class ChatCompletionRequest(BaseModel):
-    model: str = config.API_MODEL_NAME
+class MessagesRequest(BaseModel):
+    model: str
+    max_tokens: int
     messages: List[Message]
-    max_tokens: Optional[int] = config.DEFAULT_MAX_TOKENS
-    temperature: Optional[float] = config.DEFAULT_TEMPERATURE
-    top_p: Optional[float] = config.DEFAULT_TOP_P
+    system: Optional[Union[str, List[SystemContent]]] = None
+    stop_sequences: Optional[List[str]] = None
     stream: Optional[bool] = False
-    system: Optional[str] = None
+    temperature: Optional[float] = 1.0
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
+    tools: Optional[List[Tool]] = None
+    tool_choice: Optional[Dict[str, Any]] = None
+    thinking: Optional[ThinkingConfig] = None
+    original_model: Optional[str] = None
 
 
-class ChatCompletionResponse(BaseModel):
-    id: str
-    object: str = "chat.completion"
-    created: int
+class TokenCountRequest(BaseModel):
     model: str
-    choices: List[Dict[str, Any]]
-    usage: Dict[str, int]
+    messages: List[Message]
+    system: Optional[Union[str, List[SystemContent]]] = None
+    tools: Optional[List[Tool]] = None
+    thinking: Optional[ThinkingConfig] = None
+    tool_choice: Optional[Dict[str, Any]] = None
+    original_model: Optional[str] = None
 
 
-class ChatCompletionChunk(BaseModel):
+class Usage(BaseModel):
+    input_tokens: int
+    output_tokens: int
+
+
+class MessageResponse(BaseModel):
     id: str
-    object: str = "chat.completion.chunk"
-    created: int
+    type: str = "message"
+    role: str = "assistant"
+    content: List[ContentBlockText]
     model: str
-    choices: List[Dict[str, Any]]
+    stop_reason: str = "end_turn"
+    stop_sequence: Optional[str] = None
+    usage: Usage
+
+
+class MessageStreamResponse(BaseModel):
+    type: str
+    index: Optional[int] = None
+    delta: Optional[Dict[str, Any]] = None
+    usage: Optional[Usage] = None
 
 
 @asynccontextmanager
@@ -69,19 +141,59 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+def extract_text_from_content(
+    content: Union[
+        str,
+        List[
+            Union[
+                ContentBlockText,
+                ContentBlockImage,
+                ContentBlockToolUse,
+                ContentBlockToolResult,
+            ]
+        ],
+    ],
+) -> str:
+    """Extract text content from Claude-style content blocks"""
+    if isinstance(content, str):
+        return content
+
+    text_parts = []
+    for block in content:
+        if hasattr(block, "type") and block.type == "text":
+            text_parts.append(block.text)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            text_parts.append(block.get("text", ""))
+
+    return " ".join(text_parts)
+
+
+def extract_system_text(
+    system: Optional[Union[str, List[SystemContent]]],
+) -> Optional[str]:
+    """Extract system text from system parameter"""
+    if isinstance(system, str):
+        return system
+    elif isinstance(system, list):
+        return " ".join([content.text for content in system])
+    return None
+
+
 def format_messages_for_llama(
-    messages: List[Message], system: Optional[str] = None
+    messages: List[Message], system: Optional[Union[str, List[SystemContent]]] = None
 ) -> str:
     """Convert Claude-style messages to Llama format"""
     formatted_messages = []
 
     # Add system message if provided
-    if system:
-        formatted_messages.append({"role": "system", "content": system})
+    system_text = extract_system_text(system)
+    if system_text:
+        formatted_messages.append({"role": "system", "content": system_text})
 
     # Add user messages
     for message in messages:
-        formatted_messages.append({"role": message.role, "content": message.content})
+        content_text = extract_text_from_content(message.content)
+        formatted_messages.append({"role": message.role, "content": content_text})
 
     # Apply chat template if available
     if tokenizer.chat_template is not None:
@@ -107,8 +219,8 @@ def count_tokens(text: str) -> int:
     return len(tokenizer.encode(text))
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+@app.post("/v1/messages")
+async def create_message(request: MessagesRequest):
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
@@ -122,7 +234,7 @@ async def chat_completions(request: ChatCompletionRequest):
         if request.stream:
             return StreamingResponse(
                 stream_generate_response(request, prompt, input_tokens),
-                media_type="text/plain",
+                media_type="text/event-stream",
             )
         else:
             return await generate_response(request, prompt, input_tokens)
@@ -131,9 +243,25 @@ async def chat_completions(request: ChatCompletionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def generate_response(
-    request: ChatCompletionRequest, prompt: str, input_tokens: int
-):
+@app.post("/v1/messages/count_tokens")
+async def count_tokens_endpoint(request: TokenCountRequest):
+    if tokenizer is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    try:
+        # Format messages for token counting
+        prompt = format_messages_for_llama(request.messages, request.system)
+
+        # Count tokens
+        token_count = count_tokens(prompt)
+
+        return {"input_tokens": token_count}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def generate_response(request: MessagesRequest, prompt: str, input_tokens: int):
     """Generate non-streaming response"""
     # Generate text
     response_text = generate(
@@ -149,34 +277,47 @@ async def generate_response(
     # Count output tokens
     output_tokens = count_tokens(response_text)
 
-    # Create response
-    response = ChatCompletionResponse(
-        id="chatcmpl-" + str(hash(prompt))[:8],
-        created=int(asyncio.get_event_loop().time()),
+    # Create Claude-style response
+    response = MessageResponse(
+        id="msg_" + str(abs(hash(prompt)))[:8],
+        content=[ContentBlockText(text=response_text)],
         model=request.model,
-        choices=[
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": response_text},
-                "finish_reason": "stop",
-            }
-        ],
-        usage={
-            "prompt_tokens": input_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        },
+        usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens),
     )
 
     return response
 
 
 async def stream_generate_response(
-    request: ChatCompletionResponse, prompt: str, input_tokens: int
+    request: MessagesRequest, prompt: str, input_tokens: int
 ):
     """Generate streaming response"""
-    response_id = "chatcmpl-" + str(hash(prompt))[:8]
-    created = int(asyncio.get_event_loop().time())
+    response_id = "msg_" + str(abs(hash(prompt)))[:8]
+    full_text = ""
+
+    # Send message start event
+    message_start = {
+        "type": "message_start",
+        "message": {
+            "id": response_id,
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": request.model,
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+        },
+    }
+    yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
+
+    # Send content block start
+    content_start = {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": ""},
+    }
+    yield f"event: content_block_start\ndata: {json.dumps(content_start)}\n\n"
 
     # Stream generation
     for i, response in enumerate(
@@ -190,34 +331,34 @@ async def stream_generate_response(
             verbose=config.VERBOSE,
         )
     ):
-        chunk = ChatCompletionChunk(
-            id=response_id,
-            created=created,
-            model=request.model,
-            choices=[
-                {
-                    "index": 0,
-                    "delta": {
-                        "role": "assistant" if i == 0 else None,
-                        "content": response.text,
-                    },
-                    "finish_reason": None,
-                }
-            ],
-        )
+        full_text += response.text
 
-        yield f"data: {chunk.model_dump_json()}\n\n"
+        # Send content block delta
+        content_delta = {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": response.text},
+        }
+        yield f"event: content_block_delta\ndata: {json.dumps(content_delta)}\n\n"
 
-    # Send final chunk
-    final_chunk = ChatCompletionChunk(
-        id=response_id,
-        created=created,
-        model=request.model,
-        choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}],
-    )
+    # Count output tokens
+    output_tokens = count_tokens(full_text)
 
-    yield f"data: {final_chunk.model_dump_json()}\n\n"
-    yield "data: [DONE]\n\n"
+    # Send content block stop
+    content_stop = {"type": "content_block_stop", "index": 0}
+    yield f"event: content_block_stop\ndata: {json.dumps(content_stop)}\n\n"
+
+    # Send message delta with usage
+    message_delta = {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": output_tokens},
+    }
+    yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"
+
+    # Send message stop
+    message_stop = {"type": "message_stop"}
+    yield f"event: message_stop\ndata: {json.dumps(message_stop)}\n\n"
 
 
 @app.get("/health")
