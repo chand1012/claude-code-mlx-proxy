@@ -197,26 +197,70 @@ def format_messages_for_llama(
 
     # Apply chat template if available
     if tokenizer.chat_template is not None:
-        return tokenizer.apply_chat_template(
-            formatted_messages, add_generation_prompt=True
-        )
-    else:
-        # Fallback formatting
-        prompt = ""
-        for msg in formatted_messages:
-            if msg["role"] == "system":
-                prompt += f"<|system|>\n{msg['content']}\n<|end|>\n"
-            elif msg["role"] == "user":
-                prompt += f"<|user|>\n{msg['content']}\n<|end|>\n"
-            elif msg["role"] == "assistant":
-                prompt += f"<|assistant|>\n{msg['content']}\n<|end|>\n"
-        prompt += "<|assistant|>\n"
-        return prompt
+        try:
+            result = tokenizer.apply_chat_template(
+                formatted_messages, add_generation_prompt=True, tokenize=False
+            )
+            # Ensure we return a string, not tokens
+            if isinstance(result, str):
+                return result
+        except Exception:
+            # Fall through to manual formatting if template fails
+            pass
+
+    # Fallback formatting (used if no template or template fails)
+    prompt = ""
+    for msg in formatted_messages:
+        if msg["role"] == "system":
+            prompt += f"<|system|>\n{msg['content']}\n<|end|>\n"
+        elif msg["role"] == "user":
+            prompt += f"<|user|>\n{msg['content']}\n<|end|>\n"
+        elif msg["role"] == "assistant":
+            prompt += f"<|assistant|>\n{msg['content']}\n<|end|>\n"
+    prompt += "<|assistant|>\n"
+    return prompt
 
 
 def count_tokens(text: str) -> int:
     """Count tokens in text"""
-    return len(tokenizer.encode(text))
+    try:
+        # MLX tokenizers often expect the text to be handled through their specific methods
+        # First try the standard approach with proper string handling
+        if isinstance(text, str) and text.strip():
+            # For MLX, we may need to use a different approach
+            # Try to get tokens using the tokenizer's __call__ method or encode
+            try:
+                # Some MLX tokenizers work better with this approach
+                result = tokenizer(text, return_tensors=False, add_special_tokens=False)
+                if isinstance(result, dict) and "input_ids" in result:
+                    return len(result["input_ids"])
+                elif hasattr(result, "__len__"):
+                    return len(result)
+            except (AttributeError, TypeError, ValueError):
+                pass
+
+            # Try direct encode without parameters
+            try:
+                encoded = tokenizer.encode(text)
+                return (
+                    len(encoded) if hasattr(encoded, "__len__") else len(list(encoded))
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
+
+            # Try with explicit string conversion and basic parameters
+            try:
+                tokens = tokenizer.encode(str(text), add_special_tokens=False)
+                return len(tokens)
+            except (AttributeError, TypeError, ValueError):
+                pass
+
+        # Final fallback: character-based estimation
+        return max(1, len(str(text)) // 4)  # At least 1 token, ~4 chars per token
+
+    except Exception as e:
+        print(f"Token counting failed with error: {e}")
+        return max(1, len(str(text)) // 4)  # Fallback estimation
 
 
 @app.post("/v1/messages")
@@ -264,13 +308,12 @@ async def count_tokens_endpoint(request: TokenCountRequest):
 async def generate_response(request: MessagesRequest, prompt: str, input_tokens: int):
     """Generate non-streaming response"""
     # Generate text
+    # MLX generate function parameters
     response_text = generate(
         model,
         tokenizer,
         prompt=prompt,
         max_tokens=request.max_tokens,
-        temperature=request.temperature,
-        top_p=request.top_p,
         verbose=config.VERBOSE,
     )
 
@@ -326,8 +369,6 @@ async def stream_generate_response(
             tokenizer,
             prompt=prompt,
             max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
             verbose=config.VERBOSE,
         )
     ):

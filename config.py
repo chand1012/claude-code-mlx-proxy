@@ -10,7 +10,7 @@ class Config:
 
     # Server settings
     HOST: str = os.getenv("HOST", "0.0.0.0")
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = int(os.getenv("PORT", "8888"))
 
     # Model settings
     MODEL_NAME: str = os.getenv("MODEL_NAME", "mlx-community/GLM-4.5-Air-3bit")
