@@ -46,7 +46,7 @@ First, get the proxy server running on your machine.
 4. **Start the server:**
 
     ```bash
-    python main.py
+    uv run main.py
     ```
 
     The server will start on `http://localhost:8888` (or as configured in your `.env`) and begin downloading and loading the specified MLX model. This may take some time on the first run.
@@ -115,7 +115,7 @@ This will return a Claude-style response:
 You can also test the token counting endpoint:
 
 ```bash
-curl -X POST http://localhost:8000/v1/messages/count_tokens \
+curl -X POST http://localhost:8888/v1/messages/count_tokens \
   -H "Content-Type: application/json" \
   -d '{
     "model": "claude-4-sonnet-20250514",
