@@ -1,3 +1,4 @@
+import argparse
 import json
 from typing import List, Dict, Any, Optional, Union, Literal
 from contextlib import asynccontextmanager
@@ -133,6 +134,11 @@ async def lifespan(app: FastAPI):
 
     model, tokenizer = load(config.MODEL_NAME, tokenizer_config=tokenizer_config)
     print("Model loaded successfully!")
+    print()
+    print("To use with Claude Code, run:")
+    display_host = "localhost" if config.HOST == "0.0.0.0" else config.HOST
+    print(f"  export ANTHROPIC_BASE_URL=http://{display_host}:{config.PORT}")
+    print("  claude")
     yield
     # Cleanup on shutdown
     print("Shutting down...")
@@ -415,6 +421,44 @@ async def root():
     }
 
 
-if __name__ == "__main__":
-    print(f"Starting Claude Code MLX Proxy on {config.HOST}:{config.PORT}")
+def run():
+    parser = argparse.ArgumentParser(description="Claude Code MLX Proxy")
+    parser.add_argument("--host", default=None, help=f"Host address (default: {config.HOST})")
+    parser.add_argument("--port", type=int, default=None, help=f"Port number (default: {config.PORT})")
+    parser.add_argument("--model", default=None, help=f"MLX model name (default: {config.MODEL_NAME})")
+    parser.add_argument("--api-model-name", default=None, help=f"Model name reported by API (default: {config.API_MODEL_NAME})")
+    parser.add_argument("--trust-remote-code", action="store_true", default=None, help="Trust remote code for tokenizer")
+    parser.add_argument("--eos-token", default=None, help="End-of-sequence token")
+    parser.add_argument("--max-tokens", type=int, default=None, help=f"Default max tokens (default: {config.DEFAULT_MAX_TOKENS})")
+    parser.add_argument("--temperature", type=float, default=None, help=f"Default temperature (default: {config.DEFAULT_TEMPERATURE})")
+    parser.add_argument("--top-p", type=float, default=None, help=f"Default top-p (default: {config.DEFAULT_TOP_P})")
+    parser.add_argument("--verbose", action="store_true", default=None, help="Enable verbose logging")
+
+    args = parser.parse_args()
+
+    if args.host is not None:
+        config.HOST = args.host
+    if args.port is not None:
+        config.PORT = args.port
+    if args.model is not None:
+        config.MODEL_NAME = args.model
+    if args.api_model_name is not None:
+        config.API_MODEL_NAME = args.api_model_name
+    if args.trust_remote_code is not None:
+        config.TRUST_REMOTE_CODE = args.trust_remote_code
+    if args.eos_token is not None:
+        config.EOS_TOKEN = args.eos_token
+    if args.max_tokens is not None:
+        config.DEFAULT_MAX_TOKENS = args.max_tokens
+    if args.temperature is not None:
+        config.DEFAULT_TEMPERATURE = args.temperature
+    if args.top_p is not None:
+        config.DEFAULT_TOP_P = args.top_p
+    if args.verbose is not None:
+        config.VERBOSE = args.verbose
+
     uvicorn.run(app, host=config.HOST, port=config.PORT)
+
+
+if __name__ == "__main__":
+    run()

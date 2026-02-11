@@ -10,3 +10,13 @@ dependencies = [
     "mlx-lm>=0.26.2",
     "python-dotenv>=1.1.1",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["main.py", "config.py"]
+
+[project.scripts]
+claude-code-mlx = "main:run"

@@ -178,6 +178,17 @@ All server settings are managed through the `.env` file.
 | `DEFAULT_TOP_P`       | `1.0`                                         | The default top-p for generation.                                                                       |
 | `VERBOSE`             | `false`                                       | Set to `true` to enable verbose logging from the MLX generate function.                                 |
 
+### Running Without Cloning
+
+Install directly from GitHub using `uv`:
+
+```bash
+uv tool install git+https://github.com/chand1012/claude-code-mlx-proxy.git
+claude-code-mlx --model mlx-community/Llama-3.3-70B-Instruct-4bit --port 8888
+```
+
+All configuration can be passed as CLI arguments — no `.env` file needed. Run `claude-code-mlx --help` to see all options.
+
 ## License
 
 This project is licensed under the MIT License.
