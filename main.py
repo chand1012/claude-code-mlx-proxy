@@ -6,7 +6,10 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from transformers import PreTrainedTokenizerFast
 from mlx_lm import load, generate, stream_generate
+from mlx_lm.utils import load_model, _download
+from mlx_lm.tokenizer_utils import TokenizerWrapper
 from config import config
 
 # Global variables for model and tokenizer
@@ -119,6 +122,40 @@ class MessageStreamResponse(BaseModel):
     usage: Optional[Usage] = None
 
 
+def _load_model_with_fallback(model_name: str, tokenizer_config: dict):
+    """Load model and tokenizer, falling back to PreTrainedTokenizerFast when
+    the model's tokenizer uses the Transformers v5 TokenizersBackend class which
+    is not available in older Transformers installations.
+    """
+    try:
+        return load(model_name, tokenizer_config=tokenizer_config)
+    except ValueError as e:
+        if "TokenizersBackend" not in str(e):
+            raise
+        print(
+            "Warning: Failed to load tokenizer via AutoTokenizer (TokenizersBackend not "
+            "found). This typically means the model was saved with Transformers v5 but an "
+            "older version is installed. Upgrading to 'transformers>=5.0.0' is recommended. "
+            "Attempting fallback using PreTrainedTokenizerFast..."
+        )
+
+    # Use cached model files (downloaded by the failed load() call above, or already
+    # present from a previous run).
+    model_path = _download(model_name)
+    mlx_model, mlx_config = load_model(model_path)
+
+    # PreTrainedTokenizerFast.from_pretrained does not do the tokenizer-class
+    # name lookup that AutoTokenizer performs, so it avoids the TokenizersBackend
+    # error while still reading tokenizer.json correctly.
+    hf_tokenizer = PreTrainedTokenizerFast.from_pretrained(
+        str(model_path), **tokenizer_config
+    )
+    eos_token_id = mlx_config.get("eos_token_id")
+    tokenizer = TokenizerWrapper(hf_tokenizer, eos_token_ids=eos_token_id)
+
+    return mlx_model, tokenizer
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load model on startup
@@ -132,7 +169,7 @@ async def lifespan(app: FastAPI):
     if config.EOS_TOKEN:
         tokenizer_config["eos_token"] = config.EOS_TOKEN
 
-    model, tokenizer = load(config.MODEL_NAME, tokenizer_config=tokenizer_config)
+    model, tokenizer = _load_model_with_fallback(config.MODEL_NAME, tokenizer_config)
     print("Model loaded successfully!")
     yield
     # Cleanup on shutdown
