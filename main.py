@@ -47,7 +47,7 @@ class SystemContent(BaseModel):
 
 
 class ThinkingConfig(BaseModel):
-    type: Literal["enabled", "disabled"]
+    type: Literal["enabled", "disabled", "adaptive"]
     budget_tokens: Optional[int] = None
 
 
@@ -343,6 +343,28 @@ async def count_tokens_endpoint(request: TokenCountRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def strip_thinking(text: str) -> str:
+    """Return only the final answer, dropping the model's reasoning block.
+
+    The chat template opens the thinking block, so output reads
+    "<reasoning>...</think><answer>". If no closing tag is present, the text
+    is returned unchanged.
+    """
+    if "</think>" in text:
+        return text.split("</think>", 1)[1].lstrip()
+    return text
+
+
+def sse_text_delta(text: str) -> str:
+    """Format one text delta as a Server-Sent Events message."""
+    content_delta = {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": text},
+    }
+    return f"event: content_block_delta\ndata: {json.dumps(content_delta)}\n\n"
+
+
 async def generate_response(request: MessagesRequest, prompt: str, input_tokens: int):
     """Generate non-streaming response"""
     # Generate text
@@ -354,6 +376,8 @@ async def generate_response(request: MessagesRequest, prompt: str, input_tokens:
         max_tokens=request.max_tokens,
         verbose=config.VERBOSE,
     )
+
+    response_text = strip_thinking(response_text)
 
     # Count output tokens
     output_tokens = count_tokens(response_text)
@@ -375,6 +399,9 @@ async def stream_generate_response(
     """Generate streaming response"""
     response_id = "msg_" + str(abs(hash(prompt)))[:8]
     full_text = ""
+    thinking_buffer = ""
+    thinking_done = False
+    answer_started = False
 
     # Send message start event
     message_start = {
@@ -411,13 +438,28 @@ async def stream_generate_response(
     ):
         full_text += response.text
 
-        # Send content block delta
-        content_delta = {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "text_delta", "text": response.text},
-        }
-        yield f"event: content_block_delta\ndata: {json.dumps(content_delta)}\n\n"
+        if thinking_done:
+            visible_chunk = response.text
+        else:
+            # Hold text until the closing think tag arrives; it may span chunks.
+            thinking_buffer += response.text
+            if "</think>" not in thinking_buffer:
+                continue
+            visible_chunk = thinking_buffer.split("</think>", 1)[1].lstrip()
+            thinking_done = True
+            thinking_buffer = ""
+
+        # Drop whitespace that separates the closing tag from the answer.
+        if not answer_started:
+            visible_chunk = visible_chunk.lstrip()
+        if visible_chunk:
+            answer_started = True
+            yield sse_text_delta(visible_chunk)
+
+    # If the model never closed its thinking block, send what was generated
+    # so the reply is not empty (matches strip_thinking's fallback).
+    if not thinking_done and thinking_buffer:
+        yield sse_text_delta(thinking_buffer)
 
     # Count output tokens
     output_tokens = count_tokens(full_text)
